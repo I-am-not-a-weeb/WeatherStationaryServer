@@ -115,13 +115,16 @@ private:
 
 	void message_arrived(mqtt::const_message_ptr msg) override
 	{
+        std::cout << "Got message: ";
         if(msg->get_topic() == "/update")
         {
-            pplx::task<void> task = pplx::create_task([&]()
+            std::cout << "/update.";
+            pplx::task<void> task = pplx::create_task([&,msg]()
                 {
-                    web::json::value json = web::json::value::parse(msg->get_payload_str());
                     try 
                     {
+                        std::string payload(msg->to_string());
+                        web::json::value json = web::json::value::parse(payload);
                         const std::time_t now = time(0);
 
                         std::tm* ltm = localtime(&now);
@@ -132,32 +135,41 @@ private:
 
                         if(curr_formated_data_string!=formated_date_string)
                         {
-                            curr_date_file.close();
                         	curr_formated_data_string = formated_date_string;
-							curr_date_file.open(formated_date_string+".txt", std::ios::out | std::ios::app);
 						}
 
-                        json.at(L"temp").as_integer();
-                        json.at(L"humi").as_integer();
-                        json.at(L"ppm").as_integer();
-                        json.at(L"lux").as_integer();
-                        json.at(L"rpm").as_integer();
+                        curr_date_file.open(formated_date_string + ".txt", std::ios::out | std::ios::app);
+
+                        std::cout << json.at(L"temp").as_integer() << std::endl;
+                        std::cout << json.at(L"humi").as_integer() << std::endl;
+                        std::cout << json.at(L"ppm").as_integer() << std::endl;
+                        std::cout << json.at(L"lux").as_integer() << std::endl;
+                        std::cout << json.at(L"rpm").as_integer() << std::endl;
 
                         std::string append_to_file = {
-                        	std::to_string(5+ltm->tm_hour) + ":" + std::to_string(30+ltm->tm_min) + ":" + std::to_string(ltm->tm_sec) + " " +
+                        	std::to_string(5+ltm->tm_hour) + ":" + (ltm->tm_min > 10 ? std::to_string(ltm->tm_min) : "0" + std::to_string(ltm->tm_min)) + ":" + (ltm->tm_sec > 10 ? std::to_string(ltm->tm_sec) : ("0") + std::to_string(ltm->tm_sec)) + " " +
 							std::to_string(json.at(L"temp").as_integer()) + " " +
 							std::to_string(json.at(L"humi").as_integer()) + " " +
 							std::to_string(json.at(L"ppm").as_integer()) + " " +
 							std::to_string(json.at(L"lux").as_integer()) + " " +
-							std::to_string(json.at(L"rpm").as_integer()) + "\n" 
+							std::to_string(json.at(L"rpm").as_integer())
                         };
+
+                        curr_date_file << append_to_file << std::endl;
+
+                        curr_date_file.close();
                     }
-					catch (const web::json::json_exception& exc)
+					catch (const std::exception& e)
 					{
-						std::cerr << "Error: " << exc.what() << std::endl;
+                        
+						std::cerr << "Error: " << e.what() << std::endl;
 					}
                 });
-		}   
+		}
+        else
+        {
+        	std::cout << "unknown topic." << std::endl;
+		}
 	}
 };
 
@@ -178,6 +190,8 @@ int main(int argc, char* argv[])
     mqtt_callback mqtt_cb(mqtt_client, mqtt_conn_opts);
     mqtt_client.set_callback(mqtt_cb);
 
+    mqtt_client.connect(mqtt_conn_opts);
+
     std::string kek = "a";
     pplx::task<void> task_client = pplx::create_task([&]()          /// reading command line
 	    {
@@ -194,7 +208,7 @@ int main(int argc, char* argv[])
             while (true)
             {
                 Sleep(1000);
-                std::cout << std::endl << kek << std::endl;
+                //std::cout << std::endl << kek << std::endl;
             }
         });
         while (true);
