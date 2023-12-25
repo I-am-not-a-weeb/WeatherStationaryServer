@@ -16,9 +16,11 @@
 #include <cpprest/json.h>
 
 const auto server_url = L"http://localhost:7475/";
-const auto client_url = L"http://localhost:8080";
+utility::string_t esp_url = L"http://localhost:8080";
 
 const auto mqtt_server_url = "mqtt://localhost:1883/";
+
+web::http::client::http_client* http_client;
 
 struct struct_date;
 struct struct_growbox_data;
@@ -204,12 +206,12 @@ int main(int argc, char* argv[])
 
     web::http::experimental::listener::http_listener listener(server_url);
     listener.support(web::http::methods::GET, std::bind(handle_get,std::placeholders::_1));
+    bool listenening = false;
 
-    listener.open();
 
-    web::http::client::http_client http_client(client_url);
+    http_client = new web::http::client::http_client(esp_url);
 
-    web::websockets::client::websocket_client ws_client();
+    //web::websockets::client::websocket_client ws_client();
 
     mqtt::async_client mqtt_client(mqtt_server_url,"GrowBoxServer");
     mqtt::connect_options mqtt_conn_opts;
@@ -226,21 +228,45 @@ int main(int argc, char* argv[])
 	    {
 	        while(true)
 	        {
-                std::string tmp;
-                std::cin >> tmp;
-                kek = tmp;
+                std::string com;
+
+                std::cin >> com;
+                if(com=="start")
+                {
+                    if(listenening)
+                    {
+                    	std::cout << "Server is already listening." << std::endl;
+						continue;
+					}
+                	
+                    listener.open().then([&]
+                        {
+                            std::wcout << L"Starting listening on address: " << server_url << std::endl;
+							listenening = true;
+                        });
+                }
+                else if(com=="ping")
+                {
+                    std::string command{ std::format("ping {}\n",utility::conversions::to_utf8string(esp_url)) };
+                    system(command.c_str());
+                }
+                else if(com=="set")
+                {
+                    std::string what;
+
+                    std::cin >> what;
+                }
+                else
+                {
+                	std::cout << "Unknown command." << std::endl;
+					std::cout << "Available commands:" << std::endl;
+                    std::cout << "start -  starts server, begins answering http requests";
+                    std::cout << "ping  -  pings client esp";
+                    std::cout << "set   -  sets esp settings";
+                }
 	        }
 		});
-
-    pplx::task<void> print = pplx::create_task([&]()
-        {
-            while (true)
-            {
-                Sleep(1000);
-                //std::cout << std::endl << kek << std::endl;
-            }
-        });
-        while (true);
+	while (true);
 }
 
 void handle_get(web::http::http_request request)
@@ -405,7 +431,6 @@ void handle_get(web::http::http_request request)
                         {
                             tmp_ss << std::format("{} {} {} {} {} {}\n", time, temp, humi, ppm, lux, rpm);
 						}
-
                     }
                     file.close();
                     request.reply(web::http::status_codes::OK, tmp_ss.str());
@@ -426,4 +451,56 @@ void handle_get(web::http::http_request request)
     	std::cerr << "Error: " << e.what() << std::endl;
 		request.reply(web::http::status_codes::NotAcceptable,e.what());
 	}   
+}
+
+void handle_post(web::http::http_request request)
+{
+	try
+	{
+        if (!request.headers().has(L"Authorization"))
+        {
+        	request.reply(web::http::status_codes::Unauthorized, L"Unauthorized");
+			return;
+		}
+
+		bool authenticated = false;
+		for (auto i : auth_vec)
+		{
+
+			if (i == request.headers()[L"Authorization"].substr(6))
+			{
+				authenticated = true;
+				break;
+			}
+		}
+
+		if (!authenticated)
+		{
+			request.reply(web::http::status_codes::Unauthorized, L"Unauthorized");
+			return;
+		}
+
+        const std::vector path{ web::http::uri::split_path(web::http::uri::decode(request.relative_uri().path())) };
+		if (path.empty())
+		{
+			request.reply(web::http::status_codes::ExpectationFailed);
+			return;
+		}
+		else if (path[0] == L"settings")                           //setttings change endpoint
+		{
+            if(path.size()==1)                          
+            {
+                request.extract_string().then([&](pplx::task<utility::string_t> task)
+					{
+                        http_client->request(web::http::methods::POST, L"/settings", task.get());
+					}); 
+            }
+		}
+
+	}
+	catch(std::exception& e)
+	{
+		std::cerr << "Error: " << e.what() << std::endl;
+		request.reply(web::http::status_codes::NotAcceptable, e.what());
+	}
 }
