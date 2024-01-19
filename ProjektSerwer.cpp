@@ -31,6 +31,8 @@ std::fstream curr_date_file, auth_file;
 std::vector <utility::string_t> auth_vec = {};
 
 void handle_get(web::http::http_request request);
+void handle_patch(web::http::http_request request);
+void handle_delete(web::http::http_request request);
 
 struct struct_date
 {
@@ -155,7 +157,7 @@ private:
                         std::wcout << json.at(L"lux").as_string() << std::endl;
                         std::wcout << json.at(L"rpm").as_string() << std::endl;
 
-                        std::string kek{ std::format("{}:{}:{} {} {} {} {} {}",
+                        std::string kek{ std::format("{}:{}:{} {} {} {} {} {}",     /// sub to change
                             ltm->tm_hour >= 10 ? std::to_string(ltm->tm_hour) : "0" + std::to_string(ltm->tm_hour),
                             ltm->tm_min >= 10 ? std::to_string(ltm->tm_min) : "0" + std::to_string(ltm->tm_min),
                             ltm->tm_sec >= 10 ? std::to_string(ltm->tm_sec) : "0" + std::to_string(ltm->tm_sec),
@@ -206,12 +208,26 @@ int main(int argc, char* argv[])
 
     web::http::experimental::listener::http_listener listener(server_url);
     listener.support(web::http::methods::GET, std::bind(handle_get,std::placeholders::_1));
+    listener.support(web::http::methods::PATCH, std::bind(handle_patch, std::placeholders::_1));
     bool listenening = false;
-
 
     http_client = new web::http::client::http_client(esp_url);
 
-    //web::websockets::client::websocket_client ws_client();
+    /*
+    web::websockets::client::websocket_client ws_client;
+    ws_client.connect(U("ws://localhost:8080")).then([&](pplx::task<void> task)
+    {
+	    	try
+	    	{
+	    		task.get();
+				std::cout << "Connected to websocket." << std::endl;
+			}
+			catch (const std::exception& e)
+			{
+				std::cerr << "Error: " << e.what() << std::endl;
+			}
+	});
+	*/
 
     mqtt::async_client mqtt_client(mqtt_server_url,"GrowBoxServer");
     mqtt::connect_options mqtt_conn_opts;
@@ -260,13 +276,14 @@ int main(int argc, char* argv[])
                 {
                 	std::cout << "Unknown command." << std::endl;
 					std::cout << "Available commands:" << std::endl;
-                    std::cout << "start -  starts server, begins answering http requests";
-                    std::cout << "ping  -  pings client esp";
-                    std::cout << "set   -  sets esp settings";
+                    std::cout << "start -  starts server, begins answering http requests" << std::endl;
+                    std::cout << "ping  -  pings client esp" << std::endl;
+                    std::cout << "set   -  sets esp settings" << std::endl;
                 }
 	        }
 		});
-	while (true);
+    task_client.wait();
+	return 0;
 }
 
 void handle_get(web::http::http_request request)
@@ -281,7 +298,6 @@ void handle_get(web::http::http_request request)
         bool authenticated = false;
         for (auto i : auth_vec)
         {
-
             if (i == request.headers()[L"Authorization"].substr(6))
             {
                 authenticated = true;
@@ -301,7 +317,7 @@ void handle_get(web::http::http_request request)
 
         if (path.empty())
         {
-            request.reply(web::http::status_codes::ExpectationFailed);
+            request.reply(web::http::status_codes::BadRequest);
             return;
         }
         else if (path[0] == L"data")                           //data endpoint
@@ -314,7 +330,6 @@ void handle_get(web::http::http_request request)
                 if (file.is_open())
                 {
                     std::stringstream tmp_ss;
-
 
                     web::json::object json_query_filter = web::json::value::parse(query[L"filter"]).as_object();
 
@@ -434,17 +449,16 @@ void handle_get(web::http::http_request request)
                     }
                     file.close();
                     request.reply(web::http::status_codes::OK, tmp_ss.str());
+                    return;
                 }
                 else
                 {
                     request.reply(web::http::status_codes::NotFound);
+                    return;
                 }
             }
-            else
-            {
-                request.reply(web::http::status_codes::ExpectationFailed);
-            }
         }
+        request.reply(web::http::status_codes::BadRequest);
     }
     catch (const std::exception& e)
     {
@@ -453,7 +467,7 @@ void handle_get(web::http::http_request request)
 	}   
 }
 
-void handle_post(web::http::http_request request)
+void handle_patch(web::http::http_request request)
 {
 	try
 	{
@@ -483,20 +497,207 @@ void handle_post(web::http::http_request request)
         const std::vector path{ web::http::uri::split_path(web::http::uri::decode(request.relative_uri().path())) };
 		if (path.empty())
 		{
-			request.reply(web::http::status_codes::ExpectationFailed);
+			request.reply(web::http::status_codes::BadRequest);
 			return;
 		}
 		else if (path[0] == L"settings")                           //setttings change endpoint
 		{
             if(path.size()==1)                          
             {
-                request.extract_string().then([&](pplx::task<utility::string_t> task)
-					{
-                        http_client->request(web::http::methods::POST, L"/settings", task.get());
-					}); 
+                web::json::value json{ request.extract_json().get() };
+            	http_client->request(web::http::methods::PUT, L"/settings",json).then([&](web::http::http_response inner_response)
+            		{
+                        request.reply(inner_response.status_code());
+                        return;
+					});
             }
 		}
+        request.reply(web::http::status_codes::BadRequest);
+	}
+	catch(std::exception& e)
+	{
+		std::cerr << "Error: " << e.what() << std::endl;
+		request.reply(web::http::status_codes::NotAcceptable, e.what());
+	}
+}
 
+void handle_delete(web::http::http_request request)
+{
+	try
+	{
+		if (!request.headers().has(L"Authorization"))
+		{
+			request.reply(web::http::status_codes::Unauthorized, L"Unauthorized");
+			return;
+		}
+
+		bool authenticated = false;
+		for (auto i : auth_vec)
+		{
+			if (i == request.headers()[L"Authorization"].substr(6))
+			{
+				authenticated = true;
+				break;
+			}
+		}
+
+		if (!authenticated)
+		{
+			request.reply(web::http::status_codes::Unauthorized, L"Unauthorized");
+			return;
+		}
+
+		const std::vector path{ web::http::uri::split_path(web::http::uri::decode(request.relative_uri().path())) };
+		if (path.empty())
+		{
+			request.reply(web::http::status_codes::BadRequest);
+			return;
+		}
+		else if (path[0] == L"data")                           
+		{
+            if (path.size() == 2 && path[1].size() == 10)      //data/:DATE endpoint
+            {
+                web::json::value json_request{ request.extract_json().get() };
+
+                std::string date = utility::conversions::to_utf8string(path[1]);
+                std::ifstream file;
+                file.open(date + ".txt", std::ios::in);
+                if (file.is_open())
+                {
+                    std::stringstream tmp_ss;
+
+                    utility::string_t time_greaterthan{ L"00:00:00" }, time_lessthan{ L"24:00:00" };
+                    double temp_greaterthan{ 0 }, temp_lessthan{ 101 };
+                    double humi_greaterthan{ 0 }, humi_lessthan{ 101 };
+                    double ppm_greaterthan{ 0 }, ppm_lessthan{ 100001 };
+                    double lux_greaterthan{ 0 }, lux_lessthan{ 10001 };
+                    double rpm_greaterthan{ 0 }, rpm_lessthan{ 10001 };
+
+
+                    if (json_request[L"time"].is_object())
+                    {
+                        web::json::object json_request_time = json_request[L"time"].as_object();
+
+                        if (json_request_time[L"gt"].is_string())
+                        {
+                            time_greaterthan = json_request_time[L"gt"].as_string();
+                        }
+
+                        if (json_request_time[L"lt"].is_string())
+                        {
+                            time_lessthan = json_request_time[L"lt"].as_string();
+                        }
+                    }
+
+                    if (json_request[L"temp"].is_object())
+                    {
+                        web::json::object json_request_temp = json_request[L"temp"].as_object();
+
+                        if (json_request_temp[L"gt"].is_string())
+                        {
+                            temp_greaterthan = stod(json_request_temp[L"gt"].as_string());
+                        }
+
+                        if (json_request_temp[L"lt"].is_string())
+                        {
+                            temp_lessthan = stod(json_request_temp[L"lt"].as_string());
+                        }
+                    }
+
+                    if (json_request[L"humi"].is_object())
+                    {
+                        web::json::object json_request_humi = json_request[L"humi"].as_object();
+
+                        if (json_request_humi[L"gt"].is_string())
+                        {
+                            humi_greaterthan = stod(json_request_humi[L"gt"].as_string());
+                        }
+
+                        if (json_request_humi[L"lt"].is_string())
+                        {
+                            humi_lessthan = stod(json_request_humi[L"lt"].as_string());
+                        }
+                    }
+
+                    if (json_request[L"ppm"].is_object())
+                    {
+                        web::json::object json_request_ppm = json_request[L"ppm"].as_object();
+
+                        if (json_request_ppm[L"gt"].is_string())
+                        {
+                            ppm_greaterthan = stod(json_request_ppm[L"gt"].as_string());
+                        }
+                        if (json_request_ppm[L"lt"].is_string())
+                        {
+                            ppm_lessthan = stod(json_request_ppm[L"lt"].as_string());
+                        }
+                    }
+
+                    if (json_request[L"lux"].is_object())
+                    {
+                        web::json::object json_request_lux = json_request[L"lux"].as_object();
+
+                        if (json_request_lux[L"gt"].is_string())
+                        {
+                            lux_greaterthan = stod(json_request_lux[L"gt"].as_string());
+                        }
+                        if (json_request_lux[L"lt"].is_string())
+                        {
+                            lux_lessthan = stod(json_request_lux[L"lt"].as_string());
+                        }
+                    }
+
+                    if (json_request[L"rpm"].is_object())
+                    {
+                        web::json::object json_request_rpm = json_request[L"rpm"].as_object();
+
+                        if (json_request_rpm[L"gt"].is_string())
+                        {
+                            rpm_greaterthan = stod(json_request_rpm[L"gt"].as_string());
+                        }
+                        if (json_request_rpm[L"lt"].is_string())
+                        {
+                            rpm_lessthan = stod(json_request_rpm[L"lt"].as_string());
+                        }
+                    }
+
+                    while (!file.eof())                     /// reading file line by line and comparing to filter query
+                    {
+                        std::string time;
+                        double temp, humi, ppm, lux, rpm;
+
+                        file >> time >> temp >> humi >> ppm >> lux >> rpm;
+
+                        utility::string_t time_t = utility::conversions::to_string_t(time);
+
+                        if (time_t <= time_greaterthan || time_t >= time_lessthan &&
+                            temp <= temp_greaterthan || temp >= temp_lessthan &&
+                            humi <= humi_greaterthan || humi >= humi_lessthan &&
+                            ppm <= ppm_greaterthan || ppm >= ppm_lessthan &&
+                            lux <= lux_greaterthan || lux >= lux_lessthan &&
+                            rpm <= rpm_greaterthan || rpm >= rpm_lessthan)
+                        {
+                            tmp_ss << std::format("{} {} {} {} {} {}\n", time, temp, humi, ppm, lux, rpm);
+                        }
+                    }
+                    file.clear();
+                    file.close();
+                    std::ofstream file_new;
+                    file_new.open(date + ".txt", std::ios::out | std::ios::trunc);
+                    file_new << tmp_ss.str();
+
+                    file_new.close();
+                    request.reply(web::http::status_codes::OK);
+                    return;
+                }
+                else
+                {
+                    request.reply(web::http::status_codes::NotFound);
+                    return;
+                }
+            }
+		}
+		request.reply(web::http::status_codes::BadRequest);
 	}
 	catch(std::exception& e)
 	{
